@@ -1,0 +1,50 @@
+# Binaries
+/macaron
+/macaron-model
+/macaron-sculpt
+/macaron-uv
+/macaron-rig
+/macaron-pixel
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+/vendor/
+*.test
+*.out
+go.work
+go.work.sum
+
+# Build cache
+/tmp/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# cimgui / raylib generated
+cimgui/
+imgui.ini
+
+# Macaron project cache — inside each project, not the repo root, but ignore if accidentally created here
+.macaron/
+*.obj
+*.gltf
+*.glb
+!pkg/**/*.go
+!cmd/**/*.go
+
+# keep example projects clean
+/examples/*/.macaron/
+
+# Logs
+*.log
