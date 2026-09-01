@@ -74,6 +74,7 @@ func Launch(targetDir string, tool Tool) {
 		vp.HandleInput(allow)
 		tool.Update(ctx, dt)
 
+		// Raycast
 		ctx.RayHit = false
 		ctx.HoveredFace = -1
 		if obj := ctx.ActiveObject(); obj != nil && allow {
@@ -90,39 +91,61 @@ func Launch(targetDir string, tool Tool) {
 		render.DrawStudioGrid(32, 1.0)
 
 		viewDir := rl.Vector3Subtract(vp.Camera.Position, vp.Camera.Target)
-		for i := range ctx.Objects {
-			o := &ctx.Objects[i]
-			if !o.Visible {
-				continue
-			}
-			sel := o.ID == ctx.SelID
 
-			for fi, f := range o.Mesh.Faces {
-				if len(f.Indices) < 3 {
+		if ctx.RenderMode != RenderModeCustom {
+			for i := range ctx.Objects {
+				o := &ctx.Objects[i]
+				if !o.Visible {
 					continue
 				}
-				isHov := sel && fi == ctx.HoveredFace
-				col := render.StudioLighting(o.Material.Color, f.Normal, viewDir, isHov, sel)
-				p0 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
-				for j := 1; j < len(f.Indices)-1; j++ {
-					p1 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j]].Position, ctx.Objects)
-					p2 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j+1]].Position, ctx.Objects)
-					rl.DrawTriangle3D(p0, p1, p2, col)
-				}
-			}
+				sel := o.ID == ctx.SelID
 
-			if sel {
-				for _, e := range o.Mesh.Edges {
-					p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
-					p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
-					rl.DrawLine3D(p1, p2, rl.NewColor(255, 175, 40, 240))
+				// 1. Solid Faces (rendered in Default and Object modes)
+				if ctx.RenderMode == RenderModeDefault || ctx.RenderMode == RenderModeObject {
+					for fi, f := range o.Mesh.Faces {
+						if len(f.Indices) < 3 {
+							continue
+						}
+						isHov := (ctx.RenderMode == RenderModeDefault) && sel && fi == ctx.HoveredFace
+						col := render.StudioLighting(o.Material.Color, f.Normal, viewDir, isHov, sel && ctx.RenderMode == RenderModeDefault)
+						p0 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
+						for j := 1; j < len(f.Indices)-1; j++ {
+							p1 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j]].Position, ctx.Objects)
+							p2 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j+1]].Position, ctx.Objects)
+							rl.DrawTriangle3D(p0, p1, p2, col)
+						}
+					}
 				}
-			} else {
-				for _, e := range o.Mesh.Edges {
-					p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
-					p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
-					rl.DrawLine3D(p1, p2, rl.NewColor(30, 32, 38, 90))
+
+				// 2. Wireframe Lines
+				if ctx.RenderMode == RenderModeWireframe {
+					// See-through Blender-style wireframe: all edges visible through models
+					edgeCol := rl.NewColor(130, 145, 165, 200)
+					if sel {
+						edgeCol = rl.NewColor(255, 175, 40, 255)
+					}
+					for _, e := range o.Mesh.Edges {
+						p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
+						p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
+						rl.DrawLine3D(p1, p2, edgeCol)
+					}
+				} else if ctx.RenderMode == RenderModeDefault {
+					// Edit Mode: wireframe accents on selected object
+					if sel {
+						for _, e := range o.Mesh.Edges {
+							p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
+							p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
+							rl.DrawLine3D(p1, p2, rl.NewColor(255, 175, 40, 240))
+						}
+					} else {
+						for _, e := range o.Mesh.Edges {
+							p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
+							p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
+							rl.DrawLine3D(p1, p2, rl.NewColor(30, 32, 38, 80))
+						}
+					}
 				}
+				// In RenderModeObject: absolutely NO wireframes or vertex outlines are drawn.
 			}
 		}
 
@@ -162,7 +185,6 @@ func Launch(targetDir string, tool Tool) {
 			imgui.EndMainMenuBar()
 		}
 
-		// Render Standardized About Dialog
 		if showAboutDialog {
 			imgui.SetNextWindowSizeV(imgui.NewVec2(520, 420), imgui.CondFirstUseEver)
 			if imgui.BeginV("About — "+tool.Name(), &showAboutDialog, imgui.WindowFlagsNoCollapse) {

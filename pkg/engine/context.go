@@ -9,16 +9,26 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
+type RenderMode int
+
+const (
+	RenderModeDefault   RenderMode = iota // Edit View: Solid lit faces + selection wireframes
+	RenderModeWireframe                   // Wireframe View: Transparent see-through wireframes (Blender-style)
+	RenderModeObject                      // Object View: Clean seamless rendered mesh (no lines, no handles)
+	RenderModeCustom                      // Custom: Tool manages 100% of Draw3D
+)
+
 type Context struct {
-	Project *project.Project
-	Camera  *camera.Viewport
-	Objects []mesh.Object
-	NextID  int
-	SelID   int
+	Project    *project.Project
+	Camera     *camera.Viewport
+	Objects    []mesh.Object
+	NextID     int
+	SelID      int
+	RenderMode RenderMode
 
 	History undo.Stack
 
-	// live raycast
+	// Live raycast
 	RayHit      bool
 	HitPos      rl.Vector3
 	HitNormal   rl.Vector3

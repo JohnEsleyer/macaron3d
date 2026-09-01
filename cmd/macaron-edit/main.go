@@ -21,6 +21,14 @@ const (
 	ModeFace
 )
 
+type ViewMode int
+
+const (
+	ViewEdit ViewMode = iota
+	ViewWireframe
+	ViewObject
+)
+
 type ModalOp int
 
 const (
@@ -42,12 +50,13 @@ const (
 )
 
 type EditTool struct {
-	Mode SelectMode
+	Mode     SelectMode
+	ViewMode ViewMode
 
 	// Window Visibility Flags
-	ShowSelectionBar bool
-	ShowSceneTree    bool
-	ShowInspector    bool
+	ShowTopBar    bool
+	ShowSceneTree bool
+	ShowInspector bool
 
 	// Hover states
 	HoveredVert int
@@ -60,6 +69,11 @@ type EditTool struct {
 	SelectedVerts   map[int]bool
 	SelectedEdges   map[int]bool
 	SelectedFaces   map[int]bool
+
+	// Drag Rectangle Selection State
+	IsDraggingBox  bool
+	DragStartPos   rl.Vector2
+	DragCurrentPos rl.Vector2
 
 	// Modal State
 	ActiveOp        ModalOp
@@ -89,9 +103,10 @@ func (t *EditTool) Shortcuts() []engine.ShortcutHelp {
 		{Key: "E", Description: "Extrude selected faces along normal"},
 		{Key: "I", Description: "Inset selected faces inward"},
 		{Key: "C", Description: "Cut face with precision mouse guide"},
-		{Key: "D", Description: "Delete selection (dissolves valence-2 vertices)"},
+		{Key: "D / Delete", Description: "Delete selection (dissolves valence-2 vertices)"},
 		{Key: "1 / 2 / 3", Description: "Lock Grab/Scale to X (1), Y (2), or Z (3) axis"},
-		{Key: "Shift+Click", Description: "Multi-select / toggle objects, vertices, edges, or faces"},
+		{Key: "LMB Drag", Description: "Drag marquee box selection"},
+		{Key: "Shift+LMB", Description: "Add to multi-selection set"},
 		{Key: "Left-Click", Description: "Apply modal changes / confirm cut"},
 		{Key: "Right-Click", Description: "Cancel modal operation"},
 	}
@@ -99,7 +114,8 @@ func (t *EditTool) Shortcuts() []engine.ShortcutHelp {
 
 func (t *EditTool) Init(ctx *engine.Context) error {
 	t.Mode = ModeObject
-	t.ShowSelectionBar = true
+	t.ViewMode = ViewEdit
+	t.ShowTopBar = true
 	t.ShowSceneTree = true
 	t.ShowInspector = true
 
@@ -225,6 +241,16 @@ func (t *EditTool) cancelModal(ctx *engine.Context) {
 }
 
 func (t *EditTool) Update(ctx *engine.Context, dt float32) {
+	// Sync Engine Context RenderMode with Tool ViewMode
+	switch t.ViewMode {
+	case ViewEdit:
+		ctx.RenderMode = engine.RenderModeDefault
+	case ViewWireframe:
+		ctx.RenderMode = engine.RenderModeWireframe
+	case ViewObject:
+		ctx.RenderMode = engine.RenderModeObject
+	}
+
 	if t.BannerTimer > 0 {
 		t.BannerTimer -= dt
 	}
@@ -365,7 +391,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 		return
 	}
 
-	// Cut Modal
+	// Cut Modal Tool
 	if t.ActiveOp == OpCut {
 		if rl.IsMouseButtonPressed(rl.MouseButtonRight) {
 			t.ActiveOp = OpNone
@@ -397,119 +423,137 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 		return
 	}
 
-	// Hover Detection
-	t.HoveredVert = -1
-	t.HoveredEdge = -1
-	t.HoveredFace = ctx.HoveredFace
-	t.HoveredObj = -1
-
 	mousePos := rl.GetMousePosition()
-	if t.Mode == ModeObject {
-		bestDist := float32(1e9)
-		bestID := -1
-		for _, o := range ctx.Objects {
-			if hit, dist, _ := o.Raycast(rl.GetMouseRay(mousePos, ctx.Camera.Camera)); hit {
-				if dist < bestDist {
-					bestDist = dist
-					bestID = o.ID
-				}
-			}
-		}
-		t.HoveredObj = bestID
-	} else if obj != nil {
-		if t.Mode == ModeVertex {
-			bestDist := float32(20.0)
-			for i, v := range obj.Mesh.Vertices {
-				wp := obj.TransformPointWorld(v.Position, ctx.Objects)
-				sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
-				d := rl.Vector2Distance(mousePos, sp)
-				if d < bestDist {
-					bestDist = d
-					t.HoveredVert = i
-				}
-			}
-		} else if t.Mode == ModeEdge {
-			bestDist := float32(14.0)
-			for i, e := range obj.Mesh.Edges {
-				wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
-				wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
-				sp1 := rl.GetWorldToScreen(wp1, ctx.Camera.Camera)
-				sp2 := rl.GetWorldToScreen(wp2, ctx.Camera.Camera)
+	isAlt := rl.IsKeyDown(rl.KeyLeftAlt) || rl.IsKeyDown(rl.KeyRightAlt)
 
-				l2 := rl.Vector2DistanceSqr(sp1, sp2)
-				var d float32
-				if l2 == 0 {
-					d = rl.Vector2Distance(mousePos, sp1)
-				} else {
-					tVal := ((mousePos.X-sp1.X)*(sp2.X-sp1.X) + (mousePos.Y-sp1.Y)*(sp2.Y-sp1.Y)) / l2
-					if tVal < 0 {
-						d = rl.Vector2Distance(mousePos, sp1)
-					} else if tVal > 1 {
-						d = rl.Vector2Distance(mousePos, sp2)
-					} else {
-						proj := rl.Vector2{X: sp1.X + tVal*(sp2.X-sp1.X), Y: sp1.Y + tVal*(sp2.Y-sp1.Y)}
-						d = rl.Vector2Distance(mousePos, proj)
+	// Drag Rectangle Selection Handling
+	if rl.IsMouseButtonPressed(rl.MouseButtonLeft) && !isAlt && t.ActiveOp == OpNone {
+		t.DragStartPos = mousePos
+		t.DragCurrentPos = mousePos
+		t.IsDraggingBox = false
+	}
+
+	if rl.IsMouseButtonDown(rl.MouseButtonLeft) && !isAlt && t.ActiveOp == OpNone {
+		t.DragCurrentPos = mousePos
+		if rl.Vector2Distance(t.DragStartPos, t.DragCurrentPos) > 6.0 {
+			t.IsDraggingBox = true
+		}
+	}
+
+	if rl.IsMouseButtonReleased(rl.MouseButtonLeft) && !isAlt {
+		shift := rl.IsKeyDown(rl.KeyLeftShift) || rl.IsKeyDown(rl.KeyRightShift)
+		if t.IsDraggingBox {
+			t.executeBoxSelection(ctx, shift)
+			t.IsDraggingBox = false
+		} else {
+			// Single Click Selection - only if not dragging and not in modal
+			if t.ActiveOp == OpNone {
+				if t.Mode == ModeObject {
+					if t.HoveredObj != -1 {
+						if !shift {
+							t.SelectedObjects = make(map[int]bool)
+						}
+						if t.SelectedObjects[t.HoveredObj] {
+							delete(t.SelectedObjects, t.HoveredObj)
+							if len(t.SelectedObjects) == 0 {
+								t.SelectedObjects[t.HoveredObj] = true
+							} else if t.SelectedObjects[ctx.SelID] == false {
+								for id := range t.SelectedObjects {
+									ctx.SelID = id
+									break
+								}
+							}
+						} else {
+							t.SelectedObjects[t.HoveredObj] = true
+							ctx.SelID = t.HoveredObj
+						}
 					}
-				}
-				if d < bestDist {
-					bestDist = d
-					t.HoveredEdge = i
+				} else {
+					if !shift {
+						t.clearSubSelections()
+					}
+					if t.Mode == ModeVertex && t.HoveredVert != -1 {
+						if t.SelectedVerts[t.HoveredVert] {
+							delete(t.SelectedVerts, t.HoveredVert)
+						} else {
+							t.SelectedVerts[t.HoveredVert] = true
+						}
+					} else if t.Mode == ModeEdge && t.HoveredEdge != -1 {
+						if t.SelectedEdges[t.HoveredEdge] {
+							delete(t.SelectedEdges, t.HoveredEdge)
+						} else {
+							t.SelectedEdges[t.HoveredEdge] = true
+						}
+					} else if t.Mode == ModeFace && t.HoveredFace != -1 {
+						if t.SelectedFaces[t.HoveredFace] {
+							delete(t.SelectedFaces, t.HoveredFace)
+						} else {
+							t.SelectedFaces[t.HoveredFace] = true
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// Multi-Selection Click Handlers (Shift+Click to Toggle)
-	if rl.IsMouseButtonPressed(rl.MouseButtonLeft) {
-		shift := rl.IsKeyDown(rl.KeyLeftShift) || rl.IsKeyDown(rl.KeyRightShift)
+	// Hover Detection (only in Edit/Wireframe view modes)
+	t.HoveredVert = -1
+	t.HoveredEdge = -1
+	t.HoveredFace = ctx.HoveredFace
+	t.HoveredObj = -1
 
+	if t.ViewMode != ViewObject {
 		if t.Mode == ModeObject {
-			if t.HoveredObj != -1 {
-				if !shift {
-					t.SelectedObjects = make(map[int]bool)
+			bestDist := float32(1e9)
+			bestID := -1
+			for _, o := range ctx.Objects {
+				if hit, dist, _ := o.Raycast(rl.GetMouseRay(mousePos, ctx.Camera.Camera)); hit {
+					if dist < bestDist {
+						bestDist = dist
+						bestID = o.ID
+					}
 				}
-				if t.SelectedObjects[t.HoveredObj] {
-					delete(t.SelectedObjects, t.HoveredObj)
-					// pick another selected as active if we deselected current
-					if t.SelectedObjects[ctx.SelID] == false && len(t.SelectedObjects) > 0 {
-						for id := range t.SelectedObjects {
-							ctx.SelID = id
-							break
+			}
+			t.HoveredObj = bestID
+		} else if obj != nil {
+			if t.Mode == ModeVertex {
+				bestDist := float32(20.0)
+				for i, v := range obj.Mesh.Vertices {
+					wp := obj.TransformPointWorld(v.Position, ctx.Objects)
+					sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
+					d := rl.Vector2Distance(mousePos, sp)
+					if d < bestDist {
+						bestDist = d
+						t.HoveredVert = i
+					}
+				}
+			} else if t.Mode == ModeEdge {
+				bestDist := float32(14.0)
+				for i, e := range obj.Mesh.Edges {
+					wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
+					wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
+					sp1 := rl.GetWorldToScreen(wp1, ctx.Camera.Camera)
+					sp2 := rl.GetWorldToScreen(wp2, ctx.Camera.Camera)
+
+					l2 := rl.Vector2DistanceSqr(sp1, sp2)
+					var d float32
+					if l2 == 0 {
+						d = rl.Vector2Distance(mousePos, sp1)
+					} else {
+						tVal := ((mousePos.X-sp1.X)*(sp2.X-sp1.X) + (mousePos.Y-sp1.Y)*(sp2.Y-sp1.Y)) / l2
+						if tVal < 0 {
+							d = rl.Vector2Distance(mousePos, sp1)
+						} else if tVal > 1 {
+							d = rl.Vector2Distance(mousePos, sp2)
+						} else {
+							proj := rl.Vector2{X: sp1.X + tVal*(sp2.X-sp1.X), Y: sp1.Y + tVal*(sp2.Y-sp1.Y)}
+							d = rl.Vector2Distance(mousePos, proj)
 						}
 					}
-				} else {
-					t.SelectedObjects[t.HoveredObj] = true
-					ctx.SelID = t.HoveredObj
-				}
-				// ensure at least one selection if not shift and deselected all?
-				if len(t.SelectedObjects) == 0 && !shift {
-					t.SelectedObjects[t.HoveredObj] = true
-					ctx.SelID = t.HoveredObj
-				}
-			} else if !shift {
-				// click empty space clears? keep at least root
-			}
-		} else {
-			if !shift {
-				t.clearSubSelections()
-			}
-			if t.Mode == ModeVertex && t.HoveredVert != -1 {
-				if t.SelectedVerts[t.HoveredVert] {
-					delete(t.SelectedVerts, t.HoveredVert)
-				} else {
-					t.SelectedVerts[t.HoveredVert] = true
-				}
-			} else if t.Mode == ModeEdge && t.HoveredEdge != -1 {
-				if t.SelectedEdges[t.HoveredEdge] {
-					delete(t.SelectedEdges, t.HoveredEdge)
-				} else {
-					t.SelectedEdges[t.HoveredEdge] = true
-				}
-			} else if t.Mode == ModeFace && t.HoveredFace != -1 {
-				if t.SelectedFaces[t.HoveredFace] {
-					delete(t.SelectedFaces, t.HoveredFace)
-				} else {
-					t.SelectedFaces[t.HoveredFace] = true
+					if d < bestDist {
+						bestDist = d
+						t.HoveredEdge = i
+					}
 				}
 			}
 		}
@@ -576,62 +620,134 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 		}
 	}
 
-	if rl.IsKeyPressed(rl.KeyD) {
-		if t.Mode == ModeObject && len(t.SelectedObjects) > 0 {
-			hasRoot := false
-			for id := range t.SelectedObjects {
-				for _, o := range ctx.Objects {
-					if o.ID == id && o.ParentID == 0 {
-						hasRoot = true
+	if rl.IsKeyPressed(rl.KeyD) || rl.IsKeyPressed(rl.KeyDelete) {
+		t.deleteSelection(ctx)
+	}
+}
+
+func (t *EditTool) executeBoxSelection(ctx *engine.Context, shift bool) {
+	minX := float32(math.Min(float64(t.DragStartPos.X), float64(t.DragCurrentPos.X)))
+	maxX := float32(math.Max(float64(t.DragStartPos.X), float64(t.DragCurrentPos.X)))
+	minY := float32(math.Min(float64(t.DragStartPos.Y), float64(t.DragCurrentPos.Y)))
+	maxY := float32(math.Max(float64(t.DragStartPos.Y), float64(t.DragCurrentPos.Y)))
+
+	inRect := func(p rl.Vector2) bool {
+		return p.X >= minX && p.X <= maxX && p.Y >= minY && p.Y <= maxY
+	}
+
+	viewDir := rl.Vector3Subtract(ctx.Camera.Camera.Position, ctx.Camera.Camera.Target)
+
+	if t.Mode == ModeObject {
+		if !shift {
+			t.SelectedObjects = make(map[int]bool)
+		}
+		for _, o := range ctx.Objects {
+			center := o.TransformPointWorld(rl.Vector3{}, ctx.Objects)
+			sp := rl.GetWorldToScreen(center, ctx.Camera.Camera)
+			if inRect(sp) {
+				t.SelectedObjects[o.ID] = true
+				ctx.SelID = o.ID
+			} else {
+				for _, v := range o.Mesh.Vertices {
+					spV := rl.GetWorldToScreen(o.TransformPointWorld(v.Position, ctx.Objects), ctx.Camera.Camera)
+					if inRect(spV) {
+						t.SelectedObjects[o.ID] = true
+						ctx.SelID = o.ID
 						break
 					}
 				}
 			}
-			if hasRoot {
-				t.showBanner("Cannot delete Root object")
-				return
+		}
+	} else if obj := ctx.ActiveObject(); obj != nil {
+		if !shift {
+			t.clearSubSelections()
+		}
+
+		if t.Mode == ModeVertex {
+			for i, v := range obj.Mesh.Vertices {
+				wp := obj.TransformPointWorld(v.Position, ctx.Objects)
+				sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
+				if inRect(sp) {
+					if t.ViewMode == ViewWireframe || rl.Vector3DotProduct(v.Normal, viewDir) > -0.2 {
+						t.SelectedVerts[i] = true
+					}
+				}
 			}
-			for id := range t.SelectedObjects {
-				t.deleteObjectHierarchy(ctx, id)
+		} else if t.Mode == ModeEdge {
+			for i, e := range obj.Mesh.Edges {
+				wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
+				wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
+				sp1 := rl.GetWorldToScreen(wp1, ctx.Camera.Camera)
+				sp2 := rl.GetWorldToScreen(wp2, ctx.Camera.Camera)
+				mid := rl.Vector2Scale(rl.Vector2Add(sp1, sp2), 0.5)
+
+				if inRect(sp1) || inRect(sp2) || inRect(mid) {
+					t.SelectedEdges[i] = true
+				}
 			}
-			t.SelectedObjects = make(map[int]bool)
-			if len(ctx.Objects) > 0 {
-				ctx.SelID = ctx.Objects[0].ID
-				t.SelectedObjects[ctx.SelID] = true
+		} else if t.Mode == ModeFace {
+			for i, f := range obj.Mesh.Faces {
+				fc := obj.Mesh.GetFaceCenter(i)
+				wp := obj.TransformPointWorld(fc, ctx.Objects)
+				sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
+				if inRect(sp) {
+					if t.ViewMode == ViewWireframe || rl.Vector3DotProduct(f.Normal, viewDir) > 0.0 {
+						t.SelectedFaces[i] = true
+					}
+				}
 			}
+		}
+	}
+}
+
+func (t *EditTool) deleteSelection(ctx *engine.Context) {
+	if t.Mode == ModeObject && len(t.SelectedObjects) > 0 {
+		for id := range t.SelectedObjects {
+			for _, o := range ctx.Objects {
+				if o.ID == id && o.ParentID == 0 {
+					t.showBanner("Cannot delete Root object")
+					return
+				}
+			}
+			t.deleteObjectHierarchy(ctx, id)
+		}
+		t.SelectedObjects = make(map[int]bool)
+		if len(ctx.Objects) > 0 {
+			ctx.SelID = ctx.Objects[0].ID
+			t.SelectedObjects[ctx.SelID] = true
+		}
+		ctx.History.Save(ctx.Objects, ctx.SelID)
+		t.showBanner("Deleted selected objects")
+	} else if obj := ctx.ActiveObject(); obj != nil {
+		if t.Mode == ModeVertex && len(t.SelectedVerts) > 0 {
+			for vi := range t.SelectedVerts {
+				obj.Mesh.DissolveOrDeleteVertex(vi)
+				break
+			}
+			t.SelectedVerts = make(map[int]bool)
 			ctx.History.Save(ctx.Objects, ctx.SelID)
-			t.showBanner("Deleted selected objects")
-		} else if obj != nil {
-			if t.Mode == ModeVertex && len(t.SelectedVerts) > 0 {
-				for vi := range t.SelectedVerts {
-					obj.Mesh.DissolveOrDeleteVertex(vi)
-					break
-				}
-				t.SelectedVerts = make(map[int]bool)
-				ctx.History.Save(ctx.Objects, ctx.SelID)
-				t.showBanner("Deleted/dissolved vertex")
-			} else if t.Mode == ModeEdge && len(t.SelectedEdges) > 0 {
-				for ei := range t.SelectedEdges {
-					obj.Mesh.DeleteEdge(ei)
-					break
-				}
-				t.SelectedEdges = make(map[int]bool)
-				ctx.History.Save(ctx.Objects, ctx.SelID)
-				t.showBanner("Deleted edge")
-			} else if t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
-				for fi := range t.SelectedFaces {
-					obj.Mesh.DeleteFace(fi)
-					break
-				}
-				t.SelectedFaces = make(map[int]bool)
-				ctx.History.Save(ctx.Objects, ctx.SelID)
-				t.showBanner("Deleted face")
-			} else {
-				t.showBanner("Nothing selected to delete")
+			t.showBanner("Deleted/dissolved vertex")
+		} else if t.Mode == ModeEdge && len(t.SelectedEdges) > 0 {
+			for ei := range t.SelectedEdges {
+				obj.Mesh.DeleteEdge(ei)
+				break
 			}
+			t.SelectedEdges = make(map[int]bool)
+			ctx.History.Save(ctx.Objects, ctx.SelID)
+			t.showBanner("Deleted edge")
+		} else if t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
+			for fi := range t.SelectedFaces {
+				obj.Mesh.DeleteFace(fi)
+				break
+			}
+			t.SelectedFaces = make(map[int]bool)
+			ctx.History.Save(ctx.Objects, ctx.SelID)
+			t.showBanner("Deleted face")
 		} else {
 			t.showBanner("Nothing selected to delete")
 		}
+	} else {
+		t.showBanner("Nothing selected to delete")
 	}
 }
 
@@ -683,6 +799,10 @@ func (t *EditTool) deleteObjectHierarchy(ctx *engine.Context, id int) {
 		}
 	}
 	ctx.Objects = remaining
+	if ctx.SelID == id && len(ctx.Objects) > 0 {
+		ctx.SelID = ctx.Objects[0].ID
+		t.SelectedObjects = map[int]bool{ctx.SelID: true}
+	}
 }
 
 func (t *EditTool) Draw3D(ctx *engine.Context) {
@@ -707,65 +827,28 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 		}
 	}
 
+	// In Object View: Suppress editing handles for clean production model look
+	if t.ViewMode == ViewObject {
+		return
+	}
+
 	// 3. Object Multi-Selection Highlighting
 	if t.Mode == ModeObject {
-		// Highlight all multi-selected objects
 		for id := range t.SelectedObjects {
 			for _, o := range ctx.Objects {
-				if o.ID == id {
-					// Determine if this is active vs secondary selection
-					isActive := o.ID == ctx.SelID
-					isHovered := o.ID == t.HoveredObj
-					// Skip active object's wireframe is drawn by engine; we draw extra highlight
-					if isActive && !isHovered {
-						continue
-					}
-					col := rl.NewColor(100, 200, 255, 220)
-					if isHovered {
-						col = rl.NewColor(255, 230, 80, 200)
-					} else if o.ID == ctx.SelID {
-						col = rl.NewColor(255, 175, 40, 240)
-					}
-					// Draw object faces with subtle overlay and wireframe
-					for _, f := range o.Mesh.Faces {
-						if len(f.Indices) < 3 {
-							continue
-						}
-						// Use world transform for proper hierarchy
-						p0 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
-						for j := 1; j < len(f.Indices)-1; j++ {
-							p1 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j]].Position, ctx.Objects)
-							p2 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j+1]].Position, ctx.Objects)
-							// Subtle face overlay for object selection
-							if t.SelectedObjects[o.ID] {
-								overlay := rl.NewColor(80, 160, 255, 60)
-								if isHovered {
-									overlay = rl.NewColor(255, 230, 80, 80)
-								}
-								rl.DrawTriangle3D(p0, p1, p2, overlay)
-							}
-							_ = p1
-							_ = p2
-						}
-					}
+				if o.ID == id && o.ID != ctx.SelID {
 					for _, e := range o.Mesh.Edges {
 						p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
 						p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
-						rl.DrawLine3D(p1, p2, col)
-					}
-					// Draw bounding sphere for hover indication
-					if isHovered {
-						center := o.TransformPointWorld(o.Mesh.GetFaceCenter(0), ctx.Objects)
-						rl.DrawSphereWires(center, 0.1, 6, 6, col)
+						rl.DrawLine3D(p1, p2, rl.NewColor(100, 200, 255, 220))
 					}
 				}
 			}
 		}
-		// Also handle hovered but not yet selected
+		// Hover highlight for object mode
 		if t.HoveredObj != -1 && !t.SelectedObjects[t.HoveredObj] {
 			for _, o := range ctx.Objects {
 				if o.ID == t.HoveredObj {
-					// Find bounding
 					for _, e := range o.Mesh.Edges {
 						p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
 						p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
@@ -783,7 +866,16 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 		return
 	}
 
-	if t.Mode == ModeVertex {
+	// In Wireframe Mode: draw all edges faintly for x-ray inspection
+	if t.ViewMode == ViewWireframe {
+		for _, e := range obj.Mesh.Edges {
+			p1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
+			p2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
+			rl.DrawLine3D(p1, p2, rl.NewColor(140, 160, 190, 80))
+		}
+	}
+
+	if t.Mode == ModeVertex || t.ViewMode == ViewWireframe {
 		for vi, v := range obj.Mesh.Vertices {
 			wp := obj.TransformPointWorld(v.Position, ctx.Objects)
 			col := rl.NewColor(80, 180, 255, 255)
@@ -796,19 +888,32 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 				col = rl.Yellow
 				radius = 0.08
 			}
-			rl.DrawSphere(wp, radius, col)
+			// In Edit view, only show vertices for vertex mode; in Wireframe show always
+			if t.Mode == ModeVertex || t.ViewMode == ViewWireframe {
+				rl.DrawSphere(wp, radius, col)
+			}
 		}
-	} else if t.Mode == ModeEdge {
+	}
+
+	if t.Mode == ModeEdge {
 		for ei, e := range obj.Mesh.Edges {
 			wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
 			wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
-			// base faint
-			rl.DrawLine3D(wp1, wp2, rl.NewColor(80, 90, 110, 60))
+			col := rl.NewColor(100, 200, 255, 60)
+			draw := false
 			if t.SelectedEdges[ei] {
-				rl.DrawLine3D(wp1, wp2, rl.Orange)
+				col = rl.Orange
+				draw = true
 			}
 			if ei == t.HoveredEdge {
-				rl.DrawLine3D(wp1, wp2, rl.Yellow)
+				col = rl.Yellow
+				draw = true
+			}
+			if draw || t.ViewMode == ViewWireframe {
+				rl.DrawLine3D(wp1, wp2, col)
+			} else {
+				// faint base
+				rl.DrawLine3D(wp1, wp2, rl.NewColor(100, 200, 255, 40))
 			}
 		}
 	} else if t.Mode == ModeFace {
@@ -818,10 +923,16 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 			}
 			isSel := t.SelectedFaces[fi]
 			isHov := fi == t.HoveredFace
-			if isSel || isHov {
-				col := rl.NewColor(255, 160, 40, 140)
+			if isSel || isHov || t.ViewMode == ViewWireframe {
+				col := rl.NewColor(255, 160, 40, 60)
+				if isSel {
+					col = rl.NewColor(255, 160, 40, 140)
+				}
 				if isHov {
 					col = rl.NewColor(255, 230, 80, 180)
+				}
+				if t.ViewMode == ViewWireframe && !isSel && !isHov {
+					col = rl.NewColor(100, 150, 200, 30)
 				}
 				p0 := obj.TransformPointWorld(obj.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
 				for j := 1; j < len(f.Indices)-1; j++ {
@@ -835,18 +946,10 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 }
 
 func (t *EditTool) DrawUI(ctx *engine.Context) {
-	// Inject Window menu into main bar via a secondary bar - we use a workaround:
-	// Draw a small bar that hosts Window toggles; engine already drew File/View/Help.
-	// Instead we overlay a second bar segment for Window.
-	// To avoid duplicate MainMenuBar, we just render Window controls as a top bar window.
-	// However spec expects Window menu in MainMenuBar; we emulate by adding a floating Window menu.
-
-	// We will create a Window menu by reopening MainMenuBar if not already visible.
-	// The idiomatic way is to draw it in a separate window that mimics menu; but we follow spec:
+	// Top Menu: Window summoning dropdown - second menu bar (engine has File/View/Help)
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Window") {
-			// Use MenuItemBoolPtr with 3 args (no shortcut)
-			imgui.MenuItemBoolPtr("Selection Mode Bar", "", &t.ShowSelectionBar)
+			imgui.MenuItemBoolPtr("Top Bar Controls", "", &t.ShowTopBar)
 			imgui.MenuItemBoolPtr("Scene Tree Hierarchy", "", &t.ShowSceneTree)
 			imgui.MenuItemBoolPtr("Object Inspector", "", &t.ShowInspector)
 			imgui.EndMenu()
@@ -854,17 +957,19 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 		imgui.EndMainMenuBar()
 	}
 
-	// 1. Selection Mode Bar
-	if t.ShowSelectionBar {
+	// 1. Top Bar Controls (Selection Mode & View Mode Dropdowns)
+	if t.ShowTopBar {
 		imgui.SetNextWindowPosV(imgui.NewVec2(10, 35), imgui.CondFirstUseEver, imgui.NewVec2(0, 0))
-		imgui.SetNextWindowSizeV(imgui.NewVec2(440, 70), imgui.CondFirstUseEver)
-		if imgui.BeginV("Selection Mode##topbar", &t.ShowSelectionBar, imgui.WindowFlagsNoResize) {
+		imgui.SetNextWindowSizeV(imgui.NewVec2(560, 70), imgui.CondFirstUseEver)
+		if imgui.BeginV("Editor Controls##topbar", &t.ShowTopBar, imgui.WindowFlagsNoResize) {
+			// Selection Mode Dropdown
 			modes := []string{"Select (Object)", "Vertex", "Edge", "Face"}
-			current := int32(t.Mode)
-			preview := modes[current]
-			if imgui.BeginComboV("Mode", preview, 0) {
+			curMode := int32(t.Mode)
+			imgui.SetNextItemWidth(140)
+			previewMode := modes[curMode]
+			if imgui.BeginComboV("Mode", previewMode, 0) {
 				for i, m := range modes {
-					selected := i == int(current)
+					selected := i == int(curMode)
 					if imgui.SelectableBoolV(m, selected, 0, imgui.NewVec2(0, 0)) {
 						t.Mode = SelectMode(i)
 						t.clearSubSelections()
@@ -875,16 +980,39 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 				}
 				imgui.EndCombo()
 			}
+
 			imgui.SameLine()
-			imgui.TextDisabled("(Shift+Click: Multi-select)")
+			imgui.Spacing()
+			imgui.SameLine()
+
+			// View Mode Dropdown
+			views := []string{"Edit View", "Wireframe View", "Object View"}
+			curView := int32(t.ViewMode)
+			imgui.SetNextItemWidth(140)
+			previewView := views[curView]
+			if imgui.BeginComboV("View", previewView, 0) {
+				for i, v := range views {
+					selected := i == int(curView)
+					if imgui.SelectableBoolV(v, selected, 0, imgui.NewVec2(0, 0)) {
+						t.ViewMode = ViewMode(i)
+					}
+					if selected {
+						imgui.SetItemDefaultFocus()
+					}
+				}
+				imgui.EndCombo()
+			}
+
+			imgui.SameLine()
+			imgui.TextDisabled("(Marquee: Drag LMB)")
 		}
 		imgui.End()
 	}
 
-	// 2. Scene Tree Hierarchy Panel
+	// 2. Scene Tree Hierarchy Panel with Delete Buttons
 	if t.ShowSceneTree {
 		imgui.SetNextWindowPosV(imgui.NewVec2(10, 115), imgui.CondFirstUseEver, imgui.NewVec2(0, 0))
-		imgui.SetNextWindowSizeV(imgui.NewVec2(280, 350), imgui.CondFirstUseEver)
+		imgui.SetNextWindowSizeV(imgui.NewVec2(300, 380), imgui.CondFirstUseEver)
 		if imgui.BeginV("Scene Tree", &t.ShowSceneTree, imgui.WindowFlagsNone) {
 			imgui.Text("Hierarchy (Godot-style):")
 			t.drawSceneNode(ctx, 0)
@@ -904,8 +1032,8 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 
 	// 3. Object Inspector Panel
 	if t.ShowInspector {
-		imgui.SetNextWindowPosV(imgui.NewVec2(1060, 35), imgui.CondFirstUseEver, imgui.NewVec2(0, 0))
-		imgui.SetNextWindowSizeV(imgui.NewVec2(290, 240), imgui.CondFirstUseEver)
+		imgui.SetNextWindowPosV(imgui.NewVec2(1050, 35), imgui.CondFirstUseEver, imgui.NewVec2(0, 0))
+		imgui.SetNextWindowSizeV(imgui.NewVec2(300, 240), imgui.CondFirstUseEver)
 		if imgui.BeginV("Inspector", &t.ShowInspector, imgui.WindowFlagsNone) {
 			if o := ctx.ActiveObject(); o != nil {
 				nameStr := o.Name
@@ -935,16 +1063,29 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 		imgui.End()
 	}
 
-	// 2D Viewport Overlay Status Banner
-	modeNames := []string{"SELECT (OBJECT)", "VERTEX", "EDGE", "FACE"}
+	// 4. Render Drag Selection Rectangle
+	if t.IsDraggingBox {
+		minX := int32(math.Min(float64(t.DragStartPos.X), float64(t.DragCurrentPos.X)))
+		maxX := int32(math.Max(float64(t.DragStartPos.X), float64(t.DragCurrentPos.X)))
+		minY := int32(math.Min(float64(t.DragStartPos.Y), float64(t.DragCurrentPos.Y)))
+		maxY := int32(math.Max(float64(t.DragStartPos.Y), float64(t.DragCurrentPos.Y)))
+		w, h := maxX-minX, maxY-minY
+
+		rl.DrawRectangle(minX, minY, w, h, rl.NewColor(0, 140, 255, 45))
+		rl.DrawRectangleLines(minX, minY, w, h, rl.NewColor(0, 180, 255, 220))
+	}
+
+	// 5. Viewport Status Banner
+	modeNames := []string{"OBJECT", "VERTEX", "EDGE", "FACE"}
+	viewNames := []string{"EDIT", "WIREFRAME (SEE-THROUGH)", "OBJECT (RENDER PREVIEW)"}
 	h := float32(rl.GetScreenHeight())
-	rl.DrawRectangle(10, int32(h)-60, 560, 32, rl.NewColor(20, 22, 28, 220))
-	rl.DrawRectangleLines(10, int32(h)-60, 560, 32, rl.NewColor(80, 85, 95, 255))
-	statusText := fmt.Sprintf("MODE: [%s] | Multi: Shift+Click | G(Move) S(Scale) E(Extrude) I(Inset) C(Cut) D(Del)", modeNames[t.Mode])
+	rl.DrawRectangle(10, int32(h)-60, 640, 32, rl.NewColor(20, 22, 28, 220))
+	rl.DrawRectangleLines(10, int32(h)-60, 640, 32, rl.NewColor(80, 85, 95, 255))
+	statusText := fmt.Sprintf("[%s] | MODE: [%s] | Drag: Box Select | G(Move) S(Scale) E(Extrude) D(Del)", viewNames[t.ViewMode], modeNames[t.Mode])
 	rl.DrawText(statusText, 20, int32(h)-52, 10, rl.RayWhite)
 
 	if t.BannerTimer > 0 {
-		rl.DrawRectangle(10, int32(h)-100, 560, 32, rl.NewColor(220, 70, 50, 240))
+		rl.DrawRectangle(10, int32(h)-100, 640, 32, rl.NewColor(220, 70, 50, 240))
 		rl.DrawText(t.BannerMsg, 20, int32(h)-92, 10, rl.White)
 	}
 }
@@ -972,7 +1113,6 @@ func (t *EditTool) drawSceneNode(ctx *engine.Context, parentID int) {
 				} else {
 					t.SelectedObjects[o.ID] = true
 				}
-				// Update SelID to last clicked
 				if t.SelectedObjects[o.ID] {
 					ctx.SelID = o.ID
 				} else if len(t.SelectedObjects) > 0 {
@@ -983,6 +1123,21 @@ func (t *EditTool) drawSceneNode(ctx *engine.Context, parentID int) {
 				}
 				t.clearSubSelections()
 			}
+
+			// Inline Node Delete Button (Root cannot be deleted)
+			if o.ParentID != 0 {
+				imgui.SameLine()
+				if imgui.SmallButton(fmt.Sprintf("Del##%d", o.ID)) {
+					t.deleteObjectHierarchy(ctx, o.ID)
+					ctx.History.Save(ctx.Objects, ctx.SelID)
+					t.showBanner("Deleted object from hierarchy")
+					if isOpen {
+						imgui.TreePop()
+					}
+					return
+				}
+			}
+
 			if isOpen {
 				t.drawSceneNode(ctx, o.ID)
 				imgui.TreePop()
