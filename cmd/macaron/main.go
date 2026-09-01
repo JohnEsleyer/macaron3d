@@ -9,17 +9,28 @@ import (
 )
 
 func usage() {
-	fmt.Println(`macaron — project manager
+	fmt.Print(`macaron — project manager
 
 Usage:
   macaron init <name>        Create new project directory
-  macaron status [path]      Show project info
-  macaron doctor [path]      Validate project
+  macaron status [path|dev]  Show project info (dev = ./playground)
+  macaron doctor [path|dev]  Validate project
+  macaron dev                Shortcut to status for playground
+
+Tools:
+  macaron-edit               Scene hierarchy & sub-element 3D polygon editor
+  macaron-ps1                PS1 low-poly doll modeler & 256x256 smudge painter
+  macaron-model              Low-poly blockout
+  macaron-sculpt             Digital clay & voxel sculpting
+  macaron-uv                 Palette & UV unwrapping
+  macaron-rig                Bone & poser
+  macaron-pixel              3D → 2D sprite exporter
 
 Examples:
   macaron init hero-character
   macaron init ./knight-shield
-  macaron status .
+  macaron status dev         # uses playground/
+  macaron-ps1 dev            # launch PS1 modeler
 `)
 }
 
@@ -53,7 +64,7 @@ func main() {
 	case "status":
 		dir := "."
 		if len(os.Args) >= 3 {
-			dir = os.Args[2]
+			dir = project.ResolveDir(os.Args[2])
 		}
 		p, err := project.Load(dir)
 		if err != nil {
@@ -70,7 +81,7 @@ func main() {
 	case "doctor":
 		dir := "."
 		if len(os.Args) >= 3 {
-			dir = os.Args[2]
+			dir = project.ResolveDir(os.Args[2])
 		}
 		p, err := project.Load(dir)
 		if err != nil {
@@ -79,7 +90,8 @@ func main() {
 		}
 		ok := true
 		if _, err := os.Stat(filepath.Join(p.Root, "macaron.json")); err != nil {
-			fmt.Println("✗ macaron.json missing"); ok = false
+			fmt.Println("✗ macaron.json missing")
+			ok = false
 		} else {
 			fmt.Println("✓ macaron.json")
 		}
@@ -90,6 +102,22 @@ func main() {
 		}
 		if ok {
 			fmt.Println("doctor: ok")
+		}
+	case "dev":
+		// shortcut: macaron dev -> status for playground/
+		dir := project.DevDir()
+		p, err := project.Load(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "dev: playground not found at", dir, "-", err)
+			fmt.Fprintln(os.Stderr, "run: macaron init playground")
+			os.Exit(1)
+		}
+		fmt.Printf("Project: %s (%s) [dev]\n", p.Manifest.Name, p.Root)
+		fmt.Printf("Mesh:    %s\n", p.Manifest.Mesh)
+		if _, err := os.Stat(p.MeshPath); err == nil {
+			fmt.Println("Status:  mesh.obj present")
+		} else {
+			fmt.Println("Status:  mesh.obj missing (empty project)")
 		}
 	default:
 		usage()

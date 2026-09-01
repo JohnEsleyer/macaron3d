@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -8,6 +9,7 @@ import (
 	"macaron/pkg/io"
 	"macaron/pkg/mesh"
 	"macaron/pkg/project"
+	"macaron/pkg/render"
 
 	"github.com/AllenDang/cimgui-go/backend"
 	"github.com/AllenDang/cimgui-go/backend/raylibbackend"
@@ -15,28 +17,36 @@ import (
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
-// Launch — parses target dir (like `code .`), loads project, boots Raylib+ImGui, runs tool loop.
+var showAboutDialog bool = false
+
 func Launch(targetDir string, tool Tool) {
-	// resolve project dir (if file given, use its folder)
 	if st, err := os.Stat(targetDir); err == nil && !st.IsDir() {
 		targetDir = filepath.Dir(targetDir)
 	}
 	proj, err := project.Load(targetDir)
 	if err != nil {
-		// fallback: treat as plain directory — try to work without manifest
-		proj = &project.Project{Root: targetDir, Manifest: project.DefaultManifest(filepath.Base(targetDir)), MeshPath: filepath.Join(targetDir, "mesh.obj")}
+		proj = &project.Project{
+			Root:     targetDir,
+			Manifest: project.DefaultManifest(filepath.Base(targetDir)),
+			MeshPath: filepath.Join(targetDir, "mesh.obj"),
+		}
 	}
 
 	be := raylibbackend.NewRaylibBackend()
 	backend.CreateBackend[raylibbackend.RaylibBackendFlags](be)
-	be.SetConfigFlags(raylibbackend.RaylibBackendFlagsVsyncHint, raylibbackend.RaylibBackendFlagsResizable)
-	be.SetBgColor(imgui.NewVec4(0.11, 0.12, 0.14, 1))
-	be.CreateWindow(tool.Name()+" — Macaron", 1280, 800)
+
+	be.SetConfigFlags(
+		raylibbackend.RaylibBackendFlagsMSAA4X,
+		raylibbackend.RaylibBackendFlagsVsyncHint,
+		raylibbackend.RaylibBackendFlagsResizable,
+		raylibbackend.RaylibBackendFlagsHighDPI,
+	)
+	be.SetBgColor(imgui.NewVec4(0.13, 0.14, 0.17, 1.0))
+	be.CreateWindow(tool.Name()+" — Macaron", 1360, 840)
 
 	vp := camera.New()
 	ctx := &Context{Project: proj, Camera: &vp, HoveredFace: -1, HoveredVert: -1}
 
-	// try load canonical mesh
 	if _, err := os.Stat(proj.MeshPath); err == nil {
 		if objs, err := io.ImportOBJ(proj.MeshPath); err == nil {
 			for _, o := range objs {
@@ -64,7 +74,6 @@ func Launch(targetDir string, tool Tool) {
 		vp.HandleInput(allow)
 		tool.Update(ctx, dt)
 
-		// live raycast for tool use
 		ctx.RayHit = false
 		ctx.HoveredFace = -1
 		if obj := ctx.ActiveObject(); obj != nil && allow {
@@ -78,36 +87,45 @@ func Launch(targetDir string, tool Tool) {
 		}
 
 		rl.BeginMode3D(vp.Camera)
-		rl.DrawGrid(32, 1)
+		render.DrawStudioGrid(32, 1.0)
+
+		viewDir := rl.Vector3Subtract(vp.Camera.Position, vp.Camera.Target)
 		for i := range ctx.Objects {
 			o := &ctx.Objects[i]
 			if !o.Visible {
 				continue
 			}
 			sel := o.ID == ctx.SelID
-			base := rl.NewColor(uint8(o.Material.Color[0]*255), uint8(o.Material.Color[1]*255), uint8(o.Material.Color[2]*255), 255)
+
 			for fi, f := range o.Mesh.Faces {
 				if len(f.Indices) < 3 {
 					continue
 				}
-				col := base
-				if sel && fi == ctx.HoveredFace {
-					col = rl.NewColor(255, 210, 110, 200)
-				}
-				p0 := o.TransformPoint(o.Mesh.Vertices[f.Indices[0]].Position)
+				isHov := sel && fi == ctx.HoveredFace
+				col := render.StudioLighting(o.Material.Color, f.Normal, viewDir, isHov, sel)
+				p0 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
 				for j := 1; j < len(f.Indices)-1; j++ {
-					p1 := o.TransformPoint(o.Mesh.Vertices[f.Indices[j]].Position)
-					p2 := o.TransformPoint(o.Mesh.Vertices[f.Indices[j+1]].Position)
+					p1 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j]].Position, ctx.Objects)
+					p2 := o.TransformPointWorld(o.Mesh.Vertices[f.Indices[j+1]].Position, ctx.Objects)
 					rl.DrawTriangle3D(p0, p1, p2, col)
 				}
 			}
-			// wireframe if selected
+
 			if sel {
 				for _, e := range o.Mesh.Edges {
-					rl.DrawLine3D(o.TransformPoint(o.Mesh.Vertices[e.V1].Position), o.TransformPoint(o.Mesh.Vertices[e.V2].Position), rl.NewColor(255, 160, 0, 255))
+					p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
+					p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
+					rl.DrawLine3D(p1, p2, rl.NewColor(255, 175, 40, 240))
+				}
+			} else {
+				for _, e := range o.Mesh.Edges {
+					p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
+					p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
+					rl.DrawLine3D(p1, p2, rl.NewColor(30, 32, 38, 90))
 				}
 			}
 		}
+
 		tool.Draw3D(ctx)
 		rl.EndMode3D()
 	})
@@ -135,10 +153,47 @@ func Launch(targetDir string, tool Tool) {
 				}
 				imgui.EndMenu()
 			}
+			if imgui.BeginMenu("Help") {
+				if imgui.MenuItemBool("About " + tool.Name()) {
+					showAboutDialog = true
+				}
+				imgui.EndMenu()
+			}
 			imgui.EndMainMenuBar()
 		}
+
+		// Render Standardized About Dialog
+		if showAboutDialog {
+			imgui.SetNextWindowSizeV(imgui.NewVec2(520, 420), imgui.CondFirstUseEver)
+			if imgui.BeginV("About — "+tool.Name(), &showAboutDialog, imgui.WindowFlagsNoCollapse) {
+				imgui.Text(tool.Name())
+				imgui.TextDisabled(tool.Description())
+				imgui.Separator()
+
+				imgui.TextWrapped("Note: Macaron micro-tools are specialized. Key bindings (such as 1, 2, 3, G, S, E) are context-dependent and optimized for this tool's workflow.")
+				imgui.Spacing()
+
+				imgui.Text("Tool Shortcuts & Operations:")
+				imgui.Separator()
+				for _, sc := range tool.Shortcuts() {
+					imgui.BulletText(fmt.Sprintf("%-12s : %s", sc.Key, sc.Description))
+				}
+
+				imgui.Spacing()
+				imgui.Text("Standard Viewport Controls:")
+				imgui.Separator()
+				imgui.BulletText("MMB          : Orbit Camera")
+				imgui.BulletText("Shift + MMB  : Pan Camera")
+				imgui.BulletText("Wheel        : Zoom")
+				imgui.BulletText("Numpad 1/3/7 : Front / Right / Top View")
+				imgui.BulletText("Numpad 5     : Toggle Orthographic / Perspective")
+			}
+			imgui.End()
+		}
+
 		tool.DrawUI(ctx)
-		// status bar
+
+		// Status Bar
 		io2 := imgui.CurrentIO()
 		msg := tool.Name() + " — " + tool.Description()
 		if ctx.StatusTimer > 0 {

@@ -58,3 +58,37 @@ func (p *Project) Save() error {
 	data, _ := json.MarshalIndent(p.Manifest, "", "  ")
 	return os.WriteFile(filepath.Join(p.Root, "macaron.json"), data, 0644)
 }
+
+// Dev helpers — `dev` shortcut resolves to playground/
+
+func IsDevArg(s string) bool { return s == "dev" || s == "--dev" }
+
+// DevDir returns the playground path for `dev`.
+// Walks up from cwd to find playground/ sibling to the repo root; falls back to "playground".
+func DevDir() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "playground"
+	}
+	dir := cwd
+	for i := 0; i < 6; i++ {
+		candidate := filepath.Join(dir, "playground")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "playground"
+}
+
+// ResolveDir maps a CLI arg to a real directory: "dev" -> playground, else passthrough.
+func ResolveDir(arg string) string {
+	if IsDevArg(arg) {
+		return DevDir()
+	}
+	return arg
+}

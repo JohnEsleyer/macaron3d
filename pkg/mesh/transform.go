@@ -5,6 +5,7 @@ import rl "github.com/gen2brain/raylib-go/raylib"
 type Object struct {
 	ID        int
 	Name      string
+	ParentID  int // 0 means root or top-level
 	Position  rl.Vector3
 	Rotation  rl.Vector3 // Euler degrees
 	Scale     rl.Vector3
@@ -20,11 +21,37 @@ type Material struct {
 	Metallic  float32
 }
 
-func (o *Object) TransformPoint(p rl.Vector3) rl.Vector3 {
+func (o *Object) GetLocalMatrix() rl.Matrix {
 	m := rl.MatrixScale(o.Scale.X, o.Scale.Y, o.Scale.Z)
-	m = rl.MatrixMultiply(m, rl.MatrixRotateXYZ(rl.Vector3{X: o.Rotation.X * rl.Deg2rad, Y: o.Rotation.Y * rl.Deg2rad, Z: o.Rotation.Z * rl.Deg2rad}))
+	m = rl.MatrixMultiply(m, rl.MatrixRotateXYZ(rl.Vector3{
+		X: o.Rotation.X * rl.Deg2rad,
+		Y: o.Rotation.Y * rl.Deg2rad,
+		Z: o.Rotation.Z * rl.Deg2rad,
+	}))
 	m = rl.MatrixMultiply(m, rl.MatrixTranslate(o.Position.X, o.Position.Y, o.Position.Z))
-	return rl.Vector3Transform(p, m)
+	return m
+}
+
+func (o *Object) GetWorldMatrix(objects []Object) rl.Matrix {
+	local := o.GetLocalMatrix()
+	if o.ParentID <= 0 {
+		return local
+	}
+	for i := range objects {
+		if objects[i].ID == o.ParentID {
+			parentMat := objects[i].GetWorldMatrix(objects)
+			return rl.MatrixMultiply(local, parentMat)
+		}
+	}
+	return local
+}
+
+func (o *Object) TransformPoint(p rl.Vector3) rl.Vector3 {
+	return rl.Vector3Transform(p, o.GetLocalMatrix())
+}
+
+func (o *Object) TransformPointWorld(p rl.Vector3, objects []Object) rl.Vector3 {
+	return rl.Vector3Transform(p, o.GetWorldMatrix(objects))
 }
 
 func (o *Object) Raycast(ray rl.Ray) (hit bool, dist float32, faceIdx int) {

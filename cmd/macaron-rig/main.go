@@ -10,6 +10,12 @@ import (
 type RigTool struct{}
 func (t *RigTool) Name() string { return "Macaron Rig" }
 func (t *RigTool) Description() string { return "Bone & skeleton poser (stub)" }
+func (t *RigTool) Shortcuts() []engine.ShortcutHelp {
+	return []engine.ShortcutHelp{
+		{Key: "Shift+A", Description: "Add bone joint to active armature"},
+		{Key: "G / R", Description: "Translate / Rotate selected bone in Pose mode"},
+	}
+}
 func (t *RigTool) Init(_ *engine.Context) error { return nil }
 func (t *RigTool) OnSave(_ *engine.Context) error { return nil }
 func (t *RigTool) Update(_ *engine.Context, _ float32) {}

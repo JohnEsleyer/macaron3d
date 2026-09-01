@@ -5,6 +5,7 @@ import (
 
 	"macaron/pkg/engine"
 	"macaron/pkg/mesh"
+	"macaron/pkg/project"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	rl "github.com/gen2brain/raylib-go/raylib"
@@ -12,9 +13,16 @@ import (
 
 type ModelTool struct{}
 
-func (t *ModelTool) Name() string        { return "Macaron Model" }
-func (t *ModelTool) Description() string { return "Low-poly blockout & box modeling" }
-func (t *ModelTool) Init(_ *engine.Context) error { return nil }
+func (t *ModelTool) Name() string                   { return "Macaron Model" }
+func (t *ModelTool) Description() string            { return "Low-poly blockout & box modeling" }
+func (t *ModelTool) Shortcuts() []engine.ShortcutHelp {
+	return []engine.ShortcutHelp{
+		{Key: "G", Description: "Grab / Move active object"},
+		{Key: "Tab", Description: "Toggle Object / Edit mode"},
+		{Key: "Z", Description: "Toggle Wireframe shading"},
+	}
+}
+func (t *ModelTool) Init(_ *engine.Context) error   { return nil }
 func (t *ModelTool) OnSave(_ *engine.Context) error { return nil }
 
 func (t *ModelTool) Update(ctx *engine.Context, _ float32) {
@@ -61,7 +69,7 @@ func (t *ModelTool) DrawUI(ctx *engine.Context) {
 func main() {
 	dir := "."
 	if len(os.Args) > 1 {
-		dir = os.Args[1]
+		dir = project.ResolveDir(os.Args[1])
 	}
 	engine.Launch(dir, &ModelTool{})
 }

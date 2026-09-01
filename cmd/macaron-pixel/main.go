@@ -10,6 +10,12 @@ import (
 type PixelTool struct{}
 func (t *PixelTool) Name() string { return "Macaron Pixel" }
 func (t *PixelTool) Description() string { return "3D → 2D sprite / pixel-art exporter (stub)" }
+func (t *PixelTool) Shortcuts() []engine.ShortcutHelp {
+	return []engine.ShortcutHelp{
+		{Key: "Space", Description: "Toggle 8-directional turntable preview"},
+		{Key: "F12", Description: "Export 2D sprite sheet PNG"},
+	}
+}
 func (t *PixelTool) Init(_ *engine.Context) error { return nil }
 func (t *PixelTool) OnSave(_ *engine.Context) error { return nil }
 func (t *PixelTool) Update(_ *engine.Context, _ float32) {}

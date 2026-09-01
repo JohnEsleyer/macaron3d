@@ -10,6 +10,12 @@ import (
 type UVTool struct{}
 func (t *UVTool) Name() string { return "Macaron UV" }
 func (t *UVTool) Description() string { return "Palette & UV unwrap" }
+func (t *UVTool) Shortcuts() []engine.ShortcutHelp {
+	return []engine.ShortcutHelp{
+		{Key: "LMB", Description: "Select UV islands / polygon face swatches"},
+		{Key: "U", Description: "Unwrap projection (Box / Planar / Cylindrical)"},
+	}
+}
 func (t *UVTool) Init(_ *engine.Context) error { return nil }
 func (t *UVTool) OnSave(_ *engine.Context) error { return nil }
 func (t *UVTool) Update(_ *engine.Context, _ float32) {}

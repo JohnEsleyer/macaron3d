@@ -15,6 +15,13 @@ type SculptTool struct {
 
 func (t *SculptTool) Name() string        { return "Macaron Sculpt" }
 func (t *SculptTool) Description() string { return "Digital clay — voxel remesh placeholder" }
+func (t *SculptTool) Shortcuts() []engine.ShortcutHelp {
+	return []engine.ShortcutHelp{
+		{Key: "LMB Drag", Description: "Apply digital clay brush sculpt onto surface"},
+		{Key: "Shift+LMB", Description: "Smooth surface normals and geometry"},
+		{Key: "[ / ]", Description: "Decrease / Increase brush radius"},
+	}
+}
 func (t *SculptTool) Init(_ *engine.Context) error { t.Radius = 0.6; t.Strength = 0.5; return nil }
 func (t *SculptTool) OnSave(_ *engine.Context) error { return nil }
 func (t *SculptTool) Update(_ *engine.Context, _ float32) {}

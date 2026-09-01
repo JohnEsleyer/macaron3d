@@ -1,5 +1,6 @@
 # Binaries
 /macaron
+/macaron-ps1
 /macaron-model
 /macaron-sculpt
 /macaron-uv
@@ -48,3 +49,11 @@ imgui.ini
 
 # Logs
 *.log
+
+# Textify — LLM context generator (local only)
+textify.yaml
+codebase.txt
+
+# Macaron playground — local testing (not committed)
+playground/
+
