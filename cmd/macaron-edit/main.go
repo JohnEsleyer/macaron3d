@@ -98,17 +98,17 @@ func (t *EditTool) Description() string { return "Scene hierarchy & multi-select
 
 func (t *EditTool) Shortcuts() []engine.ShortcutHelp {
 	return []engine.ShortcutHelp{
-		{Key: "G", Description: "Grab / Move selection in 3D space"},
-		{Key: "S", Description: "Scale selection around pivot"},
-		{Key: "E", Description: "Extrude selected faces along normal"},
-		{Key: "I", Description: "Inset selected faces inward"},
-		{Key: "C", Description: "Cut face with precision mouse guide"},
-		{Key: "D / Delete", Description: "Delete selection (dissolves valence-2 vertices)"},
+		{Key: "G", Description: "Grab / Move selected object(s) or sub-elements"},
+		{Key: "S", Description: "Scale selected object(s) or sub-elements around pivot"},
+		{Key: "E", Description: "Extrude selected faces along normal (Edit mode)"},
+		{Key: "I", Description: "Inset selected faces inward (Edit mode)"},
+		{Key: "C", Description: "Cut face with precision mouse guide (Edit mode)"},
+		{Key: "D / Delete", Description: "Delete selection (objects or mesh elements)"},
 		{Key: "1 / 2 / 3", Description: "Lock Grab/Scale to X (1), Y (2), or Z (3) axis"},
 		{Key: "LMB Drag", Description: "Drag marquee box selection"},
 		{Key: "Shift+LMB", Description: "Add to multi-selection set"},
-		{Key: "Left-Click", Description: "Apply modal changes / confirm cut"},
-		{Key: "Right-Click", Description: "Cancel modal operation"},
+		{Key: "Left-Click", Description: "Select object / apply modal changes"},
+		{Key: "Right-Click", Description: "Cancel modal operation / clear selection"},
 	}
 }
 
@@ -168,7 +168,7 @@ func (t *EditTool) startModal(ctx *engine.Context, op ModalOp) {
 	var centerSum rl.Vector3
 	count := 0
 
-	if t.Mode == ModeObject {
+	if t.Mode == ModeObject || t.ViewMode == ViewObject {
 		for id := range t.SelectedObjects {
 			for _, o := range ctx.Objects {
 				if o.ID == id {
@@ -218,7 +218,7 @@ func (t *EditTool) applyModal(ctx *engine.Context) {
 }
 
 func (t *EditTool) cancelModal(ctx *engine.Context) {
-	if t.Mode == ModeObject {
+	if t.Mode == ModeObject || t.ViewMode == ViewObject {
 		for id, pos := range t.OriginalObjPos {
 			for i := range ctx.Objects {
 				if ctx.Objects[i].ID == id {
@@ -258,7 +258,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 	allowUI := !imgui.CurrentIO().WantCaptureMouse() && !imgui.CurrentIO().WantCaptureKeyboard()
 	obj := ctx.ActiveObject()
 
-	// In-Progress Modal Operations
+	// In-Progress Modal Operations (Grab & Scale work seamlessly in Object View)
 	if t.ActiveOp != OpNone && t.ActiveOp != OpCut {
 		if rl.IsKeyPressed(rl.KeyOne) {
 			t.ActiveAxis = AxisX
@@ -291,7 +291,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 				offset = rl.Vector3{X: 0, Y: 0, Z: mouseDelta.Y * 0.015}
 			}
 
-			if t.Mode == ModeObject {
+			if t.Mode == ModeObject || t.ViewMode == ViewObject {
 				for id, origPos := range t.OriginalObjPos {
 					for i := range ctx.Objects {
 						if ctx.Objects[i].ID == id {
@@ -316,7 +316,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 				factor = 0.01
 			}
 
-			if t.Mode == ModeObject {
+			if t.Mode == ModeObject || t.ViewMode == ViewObject {
 				for id, origScal := range t.OriginalObjScal {
 					for i := range ctx.Objects {
 						if ctx.Objects[i].ID == id {
@@ -356,7 +356,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 			}
 
 		case OpExtrude:
-			if obj != nil {
+			if obj != nil && t.ViewMode != ViewObject {
 				offsetDist := dist * 1.5
 				for fi := range t.SelectedFaces {
 					norm := obj.Mesh.Faces[fi].Normal
@@ -372,7 +372,7 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 			}
 
 		case OpInset:
-			if obj != nil {
+			if obj != nil && t.ViewMode != ViewObject {
 				factor := float32(math.Abs(float64(dist)))
 				if factor > 0.95 {
 					factor = 0.95
@@ -446,114 +446,111 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 			t.executeBoxSelection(ctx, shift)
 			t.IsDraggingBox = false
 		} else {
-			// Single Click Selection - only if not dragging and not in modal
-			if t.ActiveOp == OpNone {
-				if t.Mode == ModeObject {
-					if t.HoveredObj != -1 {
-						if !shift {
-							t.SelectedObjects = make(map[int]bool)
-						}
-						if t.SelectedObjects[t.HoveredObj] {
-							delete(t.SelectedObjects, t.HoveredObj)
-							if len(t.SelectedObjects) == 0 {
-								t.SelectedObjects[t.HoveredObj] = true
-							} else if t.SelectedObjects[ctx.SelID] == false {
-								for id := range t.SelectedObjects {
-									ctx.SelID = id
-									break
-								}
-							}
-						} else {
+			// Single-Click Selection
+			if t.Mode == ModeObject || t.ViewMode == ViewObject {
+				if t.HoveredObj != -1 {
+					if !shift {
+						t.SelectedObjects = make(map[int]bool)
+					}
+					if t.SelectedObjects[t.HoveredObj] {
+						delete(t.SelectedObjects, t.HoveredObj)
+						if len(t.SelectedObjects) == 0 {
 							t.SelectedObjects[t.HoveredObj] = true
 							ctx.SelID = t.HoveredObj
+						} else if !t.SelectedObjects[ctx.SelID] {
+							for id := range t.SelectedObjects {
+								ctx.SelID = id
+								break
+							}
 						}
+					} else {
+						t.SelectedObjects[t.HoveredObj] = true
+						ctx.SelID = t.HoveredObj
 					}
-				} else {
-					if !shift {
-						t.clearSubSelections()
+				}
+			} else {
+				if !shift {
+					t.clearSubSelections()
+				}
+				if t.Mode == ModeVertex && t.HoveredVert != -1 {
+					if t.SelectedVerts[t.HoveredVert] {
+						delete(t.SelectedVerts, t.HoveredVert)
+					} else {
+						t.SelectedVerts[t.HoveredVert] = true
 					}
-					if t.Mode == ModeVertex && t.HoveredVert != -1 {
-						if t.SelectedVerts[t.HoveredVert] {
-							delete(t.SelectedVerts, t.HoveredVert)
-						} else {
-							t.SelectedVerts[t.HoveredVert] = true
-						}
-					} else if t.Mode == ModeEdge && t.HoveredEdge != -1 {
-						if t.SelectedEdges[t.HoveredEdge] {
-							delete(t.SelectedEdges, t.HoveredEdge)
-						} else {
-							t.SelectedEdges[t.HoveredEdge] = true
-						}
-					} else if t.Mode == ModeFace && t.HoveredFace != -1 {
-						if t.SelectedFaces[t.HoveredFace] {
-							delete(t.SelectedFaces, t.HoveredFace)
-						} else {
-							t.SelectedFaces[t.HoveredFace] = true
-						}
+				} else if t.Mode == ModeEdge && t.HoveredEdge != -1 {
+					if t.SelectedEdges[t.HoveredEdge] {
+						delete(t.SelectedEdges, t.HoveredEdge)
+					} else {
+						t.SelectedEdges[t.HoveredEdge] = true
+					}
+				} else if t.Mode == ModeFace && t.HoveredFace != -1 {
+					if t.SelectedFaces[t.HoveredFace] {
+						delete(t.SelectedFaces, t.HoveredFace)
+					} else {
+						t.SelectedFaces[t.HoveredFace] = true
 					}
 				}
 			}
 		}
 	}
 
-	// Hover Detection (only in Edit/Wireframe view modes)
+	// Hover Detection (Object hover always active in Object Mode and Object View)
 	t.HoveredVert = -1
 	t.HoveredEdge = -1
 	t.HoveredFace = ctx.HoveredFace
 	t.HoveredObj = -1
 
-	if t.ViewMode != ViewObject {
-		if t.Mode == ModeObject {
-			bestDist := float32(1e9)
-			bestID := -1
-			for _, o := range ctx.Objects {
-				if hit, dist, _ := o.Raycast(rl.GetMouseRay(mousePos, ctx.Camera.Camera)); hit {
-					if dist < bestDist {
-						bestDist = dist
-						bestID = o.ID
-					}
+	if t.Mode == ModeObject || t.ViewMode == ViewObject {
+		bestDist := float32(1e9)
+		bestID := -1
+		for _, o := range ctx.Objects {
+			if hit, dist, _ := o.Raycast(rl.GetMouseRay(mousePos, ctx.Camera.Camera)); hit {
+				if dist < bestDist {
+					bestDist = dist
+					bestID = o.ID
 				}
 			}
-			t.HoveredObj = bestID
-		} else if obj != nil {
-			if t.Mode == ModeVertex {
-				bestDist := float32(20.0)
-				for i, v := range obj.Mesh.Vertices {
-					wp := obj.TransformPointWorld(v.Position, ctx.Objects)
-					sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
-					d := rl.Vector2Distance(mousePos, sp)
-					if d < bestDist {
-						bestDist = d
-						t.HoveredVert = i
+		}
+		t.HoveredObj = bestID
+	} else if obj != nil {
+		if t.Mode == ModeVertex {
+			bestDist := float32(20.0)
+			for i, v := range obj.Mesh.Vertices {
+				wp := obj.TransformPointWorld(v.Position, ctx.Objects)
+				sp := rl.GetWorldToScreen(wp, ctx.Camera.Camera)
+				d := rl.Vector2Distance(mousePos, sp)
+				if d < bestDist {
+					bestDist = d
+					t.HoveredVert = i
+				}
+			}
+		} else if t.Mode == ModeEdge {
+			bestDist := float32(14.0)
+			for i, e := range obj.Mesh.Edges {
+				wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
+				wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
+				sp1 := rl.GetWorldToScreen(wp1, ctx.Camera.Camera)
+				sp2 := rl.GetWorldToScreen(wp2, ctx.Camera.Camera)
+
+				l2 := rl.Vector2DistanceSqr(sp1, sp2)
+				var d float32
+				if l2 == 0 {
+					d = rl.Vector2Distance(mousePos, sp1)
+				} else {
+					tVal := ((mousePos.X-sp1.X)*(sp2.X-sp1.X) + (mousePos.Y-sp1.Y)*(sp2.Y-sp1.Y)) / l2
+					if tVal < 0 {
+						d = rl.Vector2Distance(mousePos, sp1)
+					} else if tVal > 1 {
+						d = rl.Vector2Distance(mousePos, sp2)
+					} else {
+						proj := rl.Vector2{X: sp1.X + tVal*(sp2.X-sp1.X), Y: sp1.Y + tVal*(sp2.Y-sp1.Y)}
+						d = rl.Vector2Distance(mousePos, proj)
 					}
 				}
-			} else if t.Mode == ModeEdge {
-				bestDist := float32(14.0)
-				for i, e := range obj.Mesh.Edges {
-					wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
-					wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
-					sp1 := rl.GetWorldToScreen(wp1, ctx.Camera.Camera)
-					sp2 := rl.GetWorldToScreen(wp2, ctx.Camera.Camera)
-
-					l2 := rl.Vector2DistanceSqr(sp1, sp2)
-					var d float32
-					if l2 == 0 {
-						d = rl.Vector2Distance(mousePos, sp1)
-					} else {
-						tVal := ((mousePos.X-sp1.X)*(sp2.X-sp1.X) + (mousePos.Y-sp1.Y)*(sp2.Y-sp1.Y)) / l2
-						if tVal < 0 {
-							d = rl.Vector2Distance(mousePos, sp1)
-						} else if tVal > 1 {
-							d = rl.Vector2Distance(mousePos, sp2)
-						} else {
-							proj := rl.Vector2{X: sp1.X + tVal*(sp2.X-sp1.X), Y: sp1.Y + tVal*(sp2.Y-sp1.Y)}
-							d = rl.Vector2Distance(mousePos, proj)
-						}
-					}
-					if d < bestDist {
-						bestDist = d
-						t.HoveredEdge = i
-					}
+				if d < bestDist {
+					bestDist = d
+					t.HoveredEdge = i
 				}
 			}
 		}
@@ -579,7 +576,9 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 	}
 
 	if rl.IsKeyPressed(rl.KeyE) {
-		if obj != nil && t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
+		if t.ViewMode == ViewObject {
+			t.showBanner("Switch to Edit View to extrude faces")
+		} else if obj != nil && t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
 			newFaces := make(map[int]bool)
 			for fi := range t.SelectedFaces {
 				if nfi := obj.Mesh.ExtrudeFace(fi, 0.0); nfi != -1 {
@@ -595,7 +594,9 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 	}
 
 	if rl.IsKeyPressed(rl.KeyI) {
-		if obj != nil && t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
+		if t.ViewMode == ViewObject {
+			t.showBanner("Switch to Edit View to inset faces")
+		} else if obj != nil && t.Mode == ModeFace && len(t.SelectedFaces) > 0 {
 			newFaces := make(map[int]bool)
 			for fi := range t.SelectedFaces {
 				if nfi := obj.Mesh.InsetFace(fi, 0.0); nfi != -1 {
@@ -611,7 +612,9 @@ func (t *EditTool) Update(ctx *engine.Context, dt float32) {
 	}
 
 	if rl.IsKeyPressed(rl.KeyC) {
-		if obj != nil && t.Mode == ModeFace {
+		if t.ViewMode == ViewObject {
+			t.showBanner("Switch to Edit View to cut faces")
+		} else if obj != nil && t.Mode == ModeFace {
 			t.ActiveOp = OpCut
 			t.CutStep = 0
 			t.showBanner("Cut Tool: Click first point on face edge/surface")
@@ -637,7 +640,7 @@ func (t *EditTool) executeBoxSelection(ctx *engine.Context, shift bool) {
 
 	viewDir := rl.Vector3Subtract(ctx.Camera.Camera.Position, ctx.Camera.Camera.Target)
 
-	if t.Mode == ModeObject {
+	if t.Mode == ModeObject || t.ViewMode == ViewObject {
 		if !shift {
 			t.SelectedObjects = make(map[int]bool)
 		}
@@ -701,7 +704,7 @@ func (t *EditTool) executeBoxSelection(ctx *engine.Context, shift bool) {
 }
 
 func (t *EditTool) deleteSelection(ctx *engine.Context) {
-	if t.Mode == ModeObject && len(t.SelectedObjects) > 0 {
+	if (t.Mode == ModeObject || t.ViewMode == ViewObject) && len(t.SelectedObjects) > 0 {
 		for id := range t.SelectedObjects {
 			for _, o := range ctx.Objects {
 				if o.ID == id && o.ParentID == 0 {
@@ -752,7 +755,7 @@ func (t *EditTool) deleteSelection(ctx *engine.Context) {
 }
 
 func (t *EditTool) hasSelection(ctx *engine.Context) bool {
-	if t.Mode == ModeObject {
+	if t.Mode == ModeObject || t.ViewMode == ViewObject {
 		return len(t.SelectedObjects) > 0
 	}
 	if t.Mode == ModeVertex {
@@ -805,8 +808,72 @@ func (t *EditTool) deleteObjectHierarchy(ctx *engine.Context, id int) {
 	}
 }
 
+// drawSilhouetteOutline renders ONLY the camera-relative outer silhouette edges (inner edges hidden)
+func (t *EditTool) drawSilhouetteOutline(ctx *engine.Context, o *mesh.Object, col rl.Color) {
+	camPos := ctx.Camera.Camera.Position
+
+	type EdgeFaces struct {
+		Faces  []int
+		V1, V2 int
+	}
+	edgeMap := make(map[[2]int]*EdgeFaces)
+
+	for fi, f := range o.Mesh.Faces {
+		n := len(f.Indices)
+		for i := 0; i < n; i++ {
+			v1, v2 := f.Indices[i], f.Indices[(i+1)%n]
+			k := [2]int{v1, v2}
+			if v1 > v2 {
+				k = [2]int{v2, v1}
+			}
+			if ef, ok := edgeMap[k]; ok {
+				ef.Faces = append(ef.Faces, fi)
+			} else {
+				edgeMap[k] = &EdgeFaces{Faces: []int{fi}, V1: v1, V2: v2}
+			}
+		}
+	}
+
+	originWorld := o.TransformPointWorld(rl.Vector3{}, ctx.Objects)
+
+	for _, ef := range edgeMap {
+		p1 := o.TransformPointWorld(o.Mesh.Vertices[ef.V1].Position, ctx.Objects)
+		p2 := o.TransformPointWorld(o.Mesh.Vertices[ef.V2].Position, ctx.Objects)
+		mid := rl.Vector3Scale(rl.Vector3Add(p1, p2), 0.5)
+		viewVec := rl.Vector3Subtract(camPos, mid)
+
+		isSilhouette := false
+		if len(ef.Faces) == 1 {
+			// Open boundary edge: visible if face is front-facing
+			f1 := o.Mesh.Faces[ef.Faces[0]]
+			norm1World := rl.Vector3Normalize(rl.Vector3Subtract(o.TransformPointWorld(f1.Normal, ctx.Objects), originWorld))
+			if rl.Vector3DotProduct(norm1World, viewVec) > 0 {
+				isSilhouette = true
+			}
+		} else if len(ef.Faces) >= 2 {
+			f1 := o.Mesh.Faces[ef.Faces[0]]
+			f2 := o.Mesh.Faces[ef.Faces[1]]
+
+			norm1World := rl.Vector3Normalize(rl.Vector3Subtract(o.TransformPointWorld(f1.Normal, ctx.Objects), originWorld))
+			norm2World := rl.Vector3Normalize(rl.Vector3Subtract(o.TransformPointWorld(f2.Normal, ctx.Objects), originWorld))
+
+			dot1 := rl.Vector3DotProduct(norm1World, viewVec)
+			dot2 := rl.Vector3DotProduct(norm2World, viewVec)
+
+			// Silhouette edge: exactly one adjacent face is front-facing and the other is back-facing
+			if (dot1 > 0 && dot2 <= 0) || (dot1 <= 0 && dot2 > 0) {
+				isSilhouette = true
+			}
+		}
+
+		if isSilhouette {
+			rl.DrawLine3D(p1, p2, col)
+		}
+	}
+}
+
 func (t *EditTool) Draw3D(ctx *engine.Context) {
-	// 1. Draw Axis Constraint Lines
+	// 1. Draw Axis Constraint Lines (Grab & Scale)
 	if (t.ActiveOp == OpGrab || t.ActiveOp == OpScale) && ctx.ActiveObject() != nil {
 		origin := ctx.ActiveObject().TransformPointWorld(t.ModalCenter, ctx.Objects)
 		if t.ActiveAxis == AxisX {
@@ -827,12 +894,33 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 		}
 	}
 
-	// In Object View: Suppress editing handles for clean production model look
+	// In Object View: Render ONLY silhouette/outline edges (no inner mesh lines or vertex handles)
 	if t.ViewMode == ViewObject {
+		// Highlight Selected Objects with clean silhouette contour
+		for id := range t.SelectedObjects {
+			for _, o := range ctx.Objects {
+				if o.ID == id {
+					col := rl.NewColor(255, 165, 30, 245) // Primary Gold/Orange Silhouette
+					if o.ID != ctx.SelID {
+						col = rl.NewColor(100, 200, 255, 220) // Multi-Select Cyan Silhouette
+					}
+					t.drawSilhouetteOutline(ctx, &o, col)
+				}
+			}
+		}
+
+		// Highlight Hovered Object Outline
+		if t.HoveredObj != -1 && !t.SelectedObjects[t.HoveredObj] {
+			for _, o := range ctx.Objects {
+				if o.ID == t.HoveredObj {
+					t.drawSilhouetteOutline(ctx, &o, rl.NewColor(255, 235, 90, 180)) // Soft yellow outline
+				}
+			}
+		}
 		return
 	}
 
-	// 3. Object Multi-Selection Highlighting
+	// 3. Object Multi-Selection Highlighting in Edit & Wireframe Views
 	if t.Mode == ModeObject {
 		for id := range t.SelectedObjects {
 			for _, o := range ctx.Objects {
@@ -845,19 +933,6 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 				}
 			}
 		}
-		// Hover highlight for object mode
-		if t.HoveredObj != -1 && !t.SelectedObjects[t.HoveredObj] {
-			for _, o := range ctx.Objects {
-				if o.ID == t.HoveredObj {
-					for _, e := range o.Mesh.Edges {
-						p1 := o.TransformPointWorld(o.Mesh.Vertices[e.V1].Position, ctx.Objects)
-						p2 := o.TransformPointWorld(o.Mesh.Vertices[e.V2].Position, ctx.Objects)
-						rl.DrawLine3D(p1, p2, rl.NewColor(255, 255, 120, 180))
-					}
-				}
-			}
-		}
-		return
 	}
 
 	// 4. Sub-Element Highlighting on Active Object
@@ -866,19 +941,11 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 		return
 	}
 
-	// In Wireframe Mode: draw all edges faintly for x-ray inspection
-	if t.ViewMode == ViewWireframe {
-		for _, e := range obj.Mesh.Edges {
-			p1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
-			p2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
-			rl.DrawLine3D(p1, p2, rl.NewColor(140, 160, 190, 80))
-		}
-	}
-
+	// In Wireframe View: draw all vertices as glowing points for through-selection
 	if t.Mode == ModeVertex || t.ViewMode == ViewWireframe {
 		for vi, v := range obj.Mesh.Vertices {
 			wp := obj.TransformPointWorld(v.Position, ctx.Objects)
-			col := rl.NewColor(80, 180, 255, 255)
+			col := rl.NewColor(90, 190, 255, 255)
 			radius := float32(0.04)
 			if t.SelectedVerts[vi] {
 				col = rl.Orange
@@ -888,10 +955,7 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 				col = rl.Yellow
 				radius = 0.08
 			}
-			// In Edit view, only show vertices for vertex mode; in Wireframe show always
-			if t.Mode == ModeVertex || t.ViewMode == ViewWireframe {
-				rl.DrawSphere(wp, radius, col)
-			}
+			rl.DrawSphere(wp, radius, col)
 		}
 	}
 
@@ -899,21 +963,14 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 		for ei, e := range obj.Mesh.Edges {
 			wp1 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V1].Position, ctx.Objects)
 			wp2 := obj.TransformPointWorld(obj.Mesh.Vertices[e.V2].Position, ctx.Objects)
-			col := rl.NewColor(100, 200, 255, 60)
-			draw := false
+			col := rl.NewColor(100, 200, 255, 180)
 			if t.SelectedEdges[ei] {
 				col = rl.Orange
-				draw = true
+				rl.DrawLine3D(wp1, wp2, col)
 			}
 			if ei == t.HoveredEdge {
 				col = rl.Yellow
-				draw = true
-			}
-			if draw || t.ViewMode == ViewWireframe {
 				rl.DrawLine3D(wp1, wp2, col)
-			} else {
-				// faint base
-				rl.DrawLine3D(wp1, wp2, rl.NewColor(100, 200, 255, 40))
 			}
 		}
 	} else if t.Mode == ModeFace {
@@ -923,16 +980,10 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 			}
 			isSel := t.SelectedFaces[fi]
 			isHov := fi == t.HoveredFace
-			if isSel || isHov || t.ViewMode == ViewWireframe {
-				col := rl.NewColor(255, 160, 40, 60)
-				if isSel {
-					col = rl.NewColor(255, 160, 40, 140)
-				}
+			if isSel || isHov {
+				col := rl.NewColor(255, 160, 40, 140)
 				if isHov {
 					col = rl.NewColor(255, 230, 80, 180)
-				}
-				if t.ViewMode == ViewWireframe && !isSel && !isHov {
-					col = rl.NewColor(100, 150, 200, 30)
 				}
 				p0 := obj.TransformPointWorld(obj.Mesh.Vertices[f.Indices[0]].Position, ctx.Objects)
 				for j := 1; j < len(f.Indices)-1; j++ {
@@ -946,7 +997,6 @@ func (t *EditTool) Draw3D(ctx *engine.Context) {
 }
 
 func (t *EditTool) DrawUI(ctx *engine.Context) {
-	// Top Menu: Window summoning dropdown - second menu bar (engine has File/View/Help)
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Window") {
 			imgui.MenuItemBoolPtr("Top Bar Controls", "", &t.ShowTopBar)
@@ -957,12 +1007,11 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 		imgui.EndMainMenuBar()
 	}
 
-	// 1. Top Bar Controls (Selection Mode & View Mode Dropdowns)
+	// 1. Top Bar Controls
 	if t.ShowTopBar {
 		imgui.SetNextWindowPosV(imgui.NewVec2(10, 35), imgui.CondFirstUseEver, imgui.NewVec2(0, 0))
 		imgui.SetNextWindowSizeV(imgui.NewVec2(560, 70), imgui.CondFirstUseEver)
 		if imgui.BeginV("Editor Controls##topbar", &t.ShowTopBar, imgui.WindowFlagsNoResize) {
-			// Selection Mode Dropdown
 			modes := []string{"Select (Object)", "Vertex", "Edge", "Face"}
 			curMode := int32(t.Mode)
 			imgui.SetNextItemWidth(140)
@@ -985,7 +1034,6 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 			imgui.Spacing()
 			imgui.SameLine()
 
-			// View Mode Dropdown
 			views := []string{"Edit View", "Wireframe View", "Object View"}
 			curView := int32(t.ViewMode)
 			imgui.SetNextItemWidth(140)
@@ -1077,11 +1125,11 @@ func (t *EditTool) DrawUI(ctx *engine.Context) {
 
 	// 5. Viewport Status Banner
 	modeNames := []string{"OBJECT", "VERTEX", "EDGE", "FACE"}
-	viewNames := []string{"EDIT", "WIREFRAME (SEE-THROUGH)", "OBJECT (RENDER PREVIEW)"}
+	viewNames := []string{"EDIT", "WIREFRAME (SEE-THROUGH)", "OBJECT (OUTLINE PREVIEW)"}
 	h := float32(rl.GetScreenHeight())
 	rl.DrawRectangle(10, int32(h)-60, 640, 32, rl.NewColor(20, 22, 28, 220))
 	rl.DrawRectangleLines(10, int32(h)-60, 640, 32, rl.NewColor(80, 85, 95, 255))
-	statusText := fmt.Sprintf("[%s] | MODE: [%s] | Drag: Box Select | G(Move) S(Scale) E(Extrude) D(Del)", viewNames[t.ViewMode], modeNames[t.Mode])
+	statusText := fmt.Sprintf("[%s] | MODE: [%s] | Drag: Box Select | G(Move) S(Scale) D(Del)", viewNames[t.ViewMode], modeNames[t.Mode])
 	rl.DrawText(statusText, 20, int32(h)-52, 10, rl.RayWhite)
 
 	if t.BannerTimer > 0 {
@@ -1124,7 +1172,6 @@ func (t *EditTool) drawSceneNode(ctx *engine.Context, parentID int) {
 				t.clearSubSelections()
 			}
 
-			// Inline Node Delete Button (Root cannot be deleted)
 			if o.ParentID != 0 {
 				imgui.SameLine()
 				if imgui.SmallButton(fmt.Sprintf("Del##%d", o.ID)) {
